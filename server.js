@@ -19,51 +19,45 @@ app.get("/", (req, res) => {
     res.send("ESP32-CAM Relay is running");
 });
 
+app.get("/status", (req, res) => {
+    res.json({
+        cameraConnected:
+            camera !== null &&
+            camera.readyState === WebSocket.OPEN,
+
+        viewers:
+            viewers.size
+    });
+});
+
+
 wss.on("connection", (ws) => {
 
     console.log("WebSocket connection received");
 
     let role = null;
 
+
     ws.on("message", (data, isBinary) => {
 
-        // First message identifies the client
-        if (!role) {
+        // ------------------------------------------------
+        // BINARY DATA
+        // Camera -> Viewers
+        // ------------------------------------------------
 
-            if (!isBinary && data.toString() === "CAMERA") {
+        if (isBinary) {
 
-                role = "camera";
-                camera = ws;
-
-                console.log("ESP32-CAM connected");
-
-                ws.send("CAMERA_OK");
-
-                return;
-            }
-
-            if (!isBinary && data.toString() === "VIEWER") {
-
-                role = "viewer";
-                viewers.add(ws);
-
-                console.log("Viewer connected");
-
-                ws.send("VIEWER_OK");
-
-                return;
-            }
-        }
-
-        // Camera sends JPEG frames
-        if (role === "camera") {
-
-            if (isBinary) {
+            if (role === "camera") {
 
                 for (const viewer of viewers) {
 
-                    if (viewer.readyState === WebSocket.OPEN) {
+                    if (
+                        viewer.readyState ===
+                        WebSocket.OPEN
+                    ) {
+
                         viewer.send(data);
+
                     }
 
                 }
@@ -72,23 +66,186 @@ wss.on("connection", (ws) => {
 
             return;
         }
+
+
+        // ------------------------------------------------
+        // TEXT DATA
+        // ------------------------------------------------
+
+        const message =
+            data.toString();
+
+
+        // -----------------------------------------------
+        // CAMERA IDENTIFICATION
+        // -----------------------------------------------
+
+        if (
+            !role &&
+            message === "CAMERA"
+        ) {
+
+            role = "camera";
+
+            camera = ws;
+
+            console.log(
+                "ESP32-CAM connected"
+            );
+
+            ws.send("CAMERA_OK");
+
+            // Tell existing viewers that camera is online
+
+            for (const viewer of viewers) {
+
+                if (
+                    viewer.readyState ===
+                    WebSocket.OPEN
+                ) {
+
+                    viewer.send(
+                        JSON.stringify({
+                            type: "camera_status",
+                            connected: true
+                        })
+                    );
+
+                }
+
+            }
+
+            return;
+        }
+
+
+        // -----------------------------------------------
+        // VIEWER IDENTIFICATION
+        // -----------------------------------------------
+
+        if (
+            !role &&
+            message === "VIEWER"
+        ) {
+
+            role = "viewer";
+
+            viewers.add(ws);
+
+            console.log(
+                "Viewer connected"
+            );
+
+            ws.send("VIEWER_OK");
+
+            // Tell viewer whether camera exists
+
+            ws.send(
+                JSON.stringify({
+                    type: "camera_status",
+                    connected:
+                        camera !== null &&
+                        camera.readyState ===
+                        WebSocket.OPEN
+                })
+            );
+
+            return;
+        }
+
+
+        // -----------------------------------------------
+        // VIEWER -> CAMERA CONTROL
+        // -----------------------------------------------
+
+        if (
+            role === "viewer" &&
+            camera !== null &&
+            camera.readyState ===
+            WebSocket.OPEN
+        ) {
+
+            try {
+
+                const command =
+                    JSON.parse(message);
+
+                if (
+                    command.type ===
+                    "camera_settings"
+                ) {
+
+                    console.log(
+                        "Camera settings:",
+                        command
+                    );
+
+                    camera.send(
+                        JSON.stringify(command)
+                    );
+
+                }
+
+            } catch (error) {
+
+                console.log(
+                    "Invalid viewer command:",
+                    message
+                );
+
+            }
+
+        }
+
     });
+
+
+    // ------------------------------------------------
+    // CONNECTION CLOSED
+    // ------------------------------------------------
 
     ws.on("close", () => {
 
         if (role === "camera") {
 
-            console.log("ESP32-CAM disconnected");
+            console.log(
+                "ESP32-CAM disconnected"
+            );
 
             if (camera === ws) {
                 camera = null;
             }
 
+
+            // Tell viewers
+
+            for (const viewer of viewers) {
+
+                if (
+                    viewer.readyState ===
+                    WebSocket.OPEN
+                ) {
+
+                    viewer.send(
+                        JSON.stringify({
+                            type:
+                                "camera_status",
+                            connected: false
+                        })
+                    );
+
+                }
+
+            }
+
         }
+
 
         if (role === "viewer") {
 
-            console.log("Viewer disconnected");
+            console.log(
+                "Viewer disconnected"
+            );
 
             viewers.delete(ws);
 
@@ -96,14 +253,27 @@ wss.on("connection", (ws) => {
 
     });
 
+
     ws.on("error", (error) => {
-        console.log("WebSocket error:", error.message);
+
+        console.log(
+            "WebSocket error:",
+            error.message
+        );
+
     });
 
 });
 
-server.listen(PORT, "0.0.0.0", () => {
 
-    console.log(`Relay server running on port ${PORT}`);
+server.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
 
-});
+        console.log(
+            `Relay server running on port ${PORT}`
+        );
+
+    }
+);
